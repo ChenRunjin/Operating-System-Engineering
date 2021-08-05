@@ -1,45 +1,11 @@
-xv6 is a re-implementation of Dennis Ritchie's and Ken Thompson's Unix
-Version 6 (v6).  xv6 loosely follows the structure and style of v6,
-but is implemented for a modern RISC-V multiprocessor using ANSI C.
+### 个人理解
+1. 中断步骤：uservec->usertrap->usertrapret->userret
 
-ACKNOWLEDGMENTS
+2. uservec:需要处理来自用户态的中断，难点在于用户页表没法处理，所以内核页表中需要和用户页表中共享相同的映射，最顶端有一个trampoline页，又uservec的地址
 
-xv6 is inspired by John Lions's Commentary on UNIX 6th Edition (Peer
-to Peer Communications; ISBN: 1-57398-013-7; 1st edition (June 14,
-2000)). See also https://pdos.csail.mit.edu/6.828/, which
-provides pointers to on-line resources for v6.
+3. usertrap: 在usertrap函数中判断中断来源， 如果是时间中断（which_dev=2)，那么进入yeild函数，yeild函数先将进程状态修改为就绪，然后进入sched, sched切换上下文：
+`swtch(&p->context, &mycpu()->context)` 将寄存器上下文转化为cpu调度器程序（包括ra寄存器)，这样子sched函数在返回的时候就会直接回到cpu->context中存储的ra地址，即cpu调度程序, 该程序会继续在process表中寻找下一个可以执行的进程，当某个cpu再次执行到这个进程的时候，调度器函数运行 `swtch(&c->context, &p->context)`切换回之前的上下文，这时的ra为上次调用的yeild函数sched后的位置，继续运行回到usertrap，然后进入usertrapret, 在usertrapret中，进程需要回到中断前的用户态，首先存储kernel pagetabel地址到trapframe（下次进入uservec的时候会用）
 
-The following people have made contributions: Russ Cox (context switching,
-locking), Cliff Frey (MP), Xiao Yu (MP), Nickolai Zeldovich, and Austin
-Clements.
+3. context和trapframe的区别：结构体trapframe用于切换优先级、页表目录等，而context则是用于轻量级的上下文切换。从技术上来看，两者的区别在于context仅仅能够切换普通寄存器，而trapframe可以切换包括普通寄存器、段寄存器以及少量的控制寄存器。
 
-We are also grateful for the bug reports and patches contributed by
-Silas Boyd-Wickizer, Anton Burtsev, Dan Cross, Cody Cutler, Mike CAT,
-Tej Chajed, Asami Doi, eyalz800, , Nelson Elhage, Saar Ettinger, Alice
-Ferrazzi, Nathaniel Filardo, Peter Froehlich, Yakir Goaron,Shivam
-Handa, Bryan Henry, jaichenhengjie, Jim Huang, Alexander Kapshuk,
-Anders Kaseorg, kehao95, Wolfgang Keller, Jonathan Kimmitt, Eddie
-Kohler, Austin Liew, Imbar Marinescu, Yandong Mao, Matan Shabtay,
-Hitoshi Mitake, Carmi Merimovich, Mark Morrissey, mtasm, Joel Nider,
-Greg Price, Ayan Shafqat, Eldar Sehayek, Yongming Shen, Fumiya
-Shigemitsu, Takahiro, Cam Tenny, tyfkda, Rafael Ubal, Warren Toomey,
-Stephen Tu, Pablo Ventura, Xi Wang, Keiichi Watanabe, Nicolas
-Wolovick, wxdao, Grant Wu, Jindong Zhang, Icenowy Zheng, and Zou Chang
-Wei.
-
-The code in the files that constitute xv6 is
-Copyright 2006-2020 Frans Kaashoek, Robert Morris, and Russ Cox.
-
-ERROR REPORTS
-
-Please send errors and suggestions to Frans Kaashoek and Robert Morris
-(kaashoek,rtm@mit.edu). The main purpose of xv6 is as a teaching
-operating system for MIT's 6.S081, so we are more interested in
-simplifications and clarifications than new features.
-
-BUILDING AND RUNNING XV6
-
-You will need a RISC-V "newlib" tool chain from
-https://github.com/riscv/riscv-gnu-toolchain, and qemu compiled for
-riscv64-softmmu. Once they are installed, and in your shell
-search path, you can run "make qemu".
+4. alarm 思路：在调用sys_aigalarm的时候，进入uservec，之前的用户态寄存器全部存在trapframe里，然后运行sys_aigalarm函数，我们设置好ticks和handler,然后将interval置零。下次时间中断进入usertrap的时候，trapframe也存储了中断前用户态的全部寄存器，这个时候我们要把trapframe的epc改成handler的地址，这样usertrapret里就会把sepc设置成handler，函数会直接回到handler,但是再次调用sig_sigreturn的时候，trapframe中寄存器的值会被覆盖，所以在sigalarm中，我们需要开辟新的空间存储原trapframe寄存器的信息，在sigreturn中恢复，所以我们在proc结构体当中增加trapframe_bk的字段，并更改proc初始化的代码（trapframe_bk字段只在内核态用，不用在用户页表中增加映射）

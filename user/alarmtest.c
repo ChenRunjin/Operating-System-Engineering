@@ -89,6 +89,9 @@ test1()
     if(count >= 10)
       break;
     foo(i, &j);
+    // if((i % 2500000) == 0) {
+    //   printf("%d %d %p %p\n", i, j, &i, &j);
+    // }
   }
   if(count < 10){
     printf("\ntest1 failed: too few calls to the handler\n");
