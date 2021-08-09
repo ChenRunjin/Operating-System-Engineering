@@ -11,9 +11,17 @@
  */
 pagetable_t kernel_pagetable;
 
+pagetable_t cite_table;  // cite in user pagetable
 extern char etext[];  // kernel.ld sets this to end of kernel code.
 
 extern char trampoline[]; // trampoline.S
+
+void kciteinit()
+{
+  // cite, can't use kalloc()
+  cite_table = (pagetable_t) initkalloc();
+  memset(cite_table, 0, PGSIZE);
+}
 
 /*
  * create a direct-map page table for the kernel.
@@ -21,6 +29,7 @@ extern char trampoline[]; // trampoline.S
 void
 kvminit()
 {
+
   kernel_pagetable = (pagetable_t) kalloc();
   memset(kernel_pagetable, 0, PGSIZE);
 
@@ -109,6 +118,29 @@ walkaddr(pagetable_t pagetable, uint64 va)
     return 0;
   pa = PTE2PA(*pte);
   return pa;
+}
+
+
+uint64 *
+walkcite(uint64 pa)
+{
+  if(pa >= PHYSTOP)
+    panic("walkcite");
+
+  pagetable_t pagetable = cite_table;
+
+  for(int level = 2; level > 0; level--) {
+    pte_t *pte = &pagetable[PX(level, pa)];
+    if(*pte & PTE_V) {
+      pagetable = (pagetable_t)PTE2PA(*pte);
+    } else {
+      if((pagetable = (pde_t*)initkalloc()) == 0)
+        return 0;
+      memset(pagetable, 0, PGSIZE);
+      *pte = PA2PTE(pagetable) | PTE_V;
+    }
+  }
+  return &pagetable[PX(0, pa)];
 }
 
 // add a mapping to the kernel page table.
@@ -311,7 +343,8 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   pte_t *pte;
   uint64 pa, i;
   uint flags;
-  char *mem;
+  uint64 *cite;
+  // char *mem;
 
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
@@ -320,19 +353,28 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
       panic("uvmcopy: page not present");
     pa = PTE2PA(*pte);
     flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
-      goto err;
-    memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
-      kfree(mem);
-      goto err;
+    // if((mem = kalloc()) == 0)
+    //   goto err;
+    // memmove(mem, (char*)pa, PGSIZE);
+    // if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
+    //   kfree(mem);
+      // goto err;
+    // }
+    flags |= PTE_C;
+    flags &= ~PTE_W; 
+    if(mappages(new, i, PGSIZE, pa, flags) != 0){
+      return -1;
     }
+    cite = walkcite(pa);
+    *cite += 1;
+    *pte |= PTE_C;
+    *pte &= ~PTE_W;
   }
   return 0;
 
- err:
-  uvmunmap(new, 0, i / PGSIZE, 1);
-  return -1;
+//  err:
+//   uvmunmap(new, 0, i / PGSIZE, 1);
+//   return -1;
 }
 
 // mark a PTE invalid for user access.
@@ -355,12 +397,51 @@ int
 copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 {
   uint64 n, va0, pa0;
+  pte_t *pte;
+  uint flags;
 
   while(len > 0){
     va0 = PGROUNDDOWN(dstva);
-    pa0 = walkaddr(pagetable, va0);
+    // pa0 = walkaddr(pagetable, va0);
+    if(va0 >= MAXVA)
+      return -1;
+    pte = walk(pagetable, va0, 0);
+    if(pte == 0)
+      return -1;
+    pa0 = PTE2PA(*pte);
     if(pa0 == 0)
       return -1;
+    flags = PTE_FLAGS(*pte);
+    if((flags & PTE_C) && ((flags & PTE_W) == 0)){
+      // copy
+      uint64 *cite = walkcite(pa0);
+      if(*cite < 2){
+        // no need to copy
+        *pte |= PTE_W;
+        *pte &= ~PTE_C;
+      }else{
+        // copy page
+        char *mem;
+        uint flags = PTE_FLAGS(*pte);
+
+        if((mem = kalloc()) == 0){
+          return -1;
+        }
+        memmove(mem, (char*)pa0, PGSIZE);
+
+        // unmap
+        uvmunmap(pagetable, va0, 1, 1);
+
+        // map
+        flags |= PTE_W;
+        flags &= ~PTE_C;
+        if(mappages(pagetable, va0, PGSIZE, (uint64)mem, flags) != 0){
+          kfree(mem);
+          return -1;
+        }
+        pa0 = (uint64)mem;
+      }
+    }
     n = PGSIZE - (dstva - va0);
     if(n > len)
       n = len;
