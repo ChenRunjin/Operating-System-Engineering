@@ -1,0 +1,6 @@
+1. a0, a1, a2 contains arguments and a2 holds 13
+2. there is no call in assembly code for main, because the result of f(8)+1 is transfered to 12 directly
+3. 0x628
+4. 0x38,  because jalr r means  $ra <— PC+4 and  PC  <— $r
+5. He110 World
+6. it depends on a2 value
