@@ -1,0 +1,1 @@
+1. 因为caller-saved寄存器在调用swtch之前就自己存了
