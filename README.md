@@ -20,3 +20,5 @@ My repo:
 6. [LAB6_repo](repo/lab6_repo.md)
 
 7. [LAB7_repo](repo/lab7_repo.md)
+
+8. [LAB8_repo](repo/lab8_repo.md)
