@@ -9,6 +9,8 @@ I implement the 11 labs on different branch:
 	5. Lab Lazy: my_lazy
 	6. Lab Copy on write: my_cow
 	7. Lab Multithreading: my_thread
+	8. Lab Lock: my_lock
+	9. Lab File System: my_fs
 
 
 My repo:
@@ -22,3 +24,5 @@ My repo:
 7. [LAB7_repo](repo/lab7_repo.md)
 
 8. [LAB8_repo](repo/lab8_repo.md)
+
+9. [LAB9_repo](repo/lab9_repo.md)
