@@ -16,6 +16,8 @@
 #include "file.h"
 #include "fcntl.h"
 
+#define min(a, b) ((a) < (b) ? (a) : (b))
+
 // Fetch the nth word-sized system call argument as a file descriptor
 // and return both the descriptor and the corresponding struct file.
 static int
@@ -482,5 +484,154 @@ sys_pipe(void)
     fileclose(wf);
     return -1;
   }
+  return 0;
+}
+
+uint64
+sys_mmap(void)
+{
+  uint64 addr, offset;
+  int len, prot, flags, fd;
+  struct file *f;
+  struct proc *p = myproc();
+  int i;
+
+  if(argaddr(0, &addr) < 0)
+    return 0xffffffffffffffff;
+  if(argint(1, &len) < 0)
+    return 0xffffffffffffffff;
+  if(argint(2, &prot) < 0)
+    return 0xffffffffffffffff;
+  if(argint(3, &flags) < 0)
+    return 0xffffffffffffffff;
+  if(argfd(4, &fd, &f) < 0)
+    return 0xffffffffffffffff;
+  if(argaddr(5, &offset) < 0)
+    return 0xffffffffffffffff;
+  
+  if(!f->readable){
+    printf("can't read\n");
+    return 0xffffffffffffffff;
+  }
+  if((!f->writable) && (flags == MAP_SHARED) && (prot & PROT_WRITE)){
+    printf("can't write\n");
+    return 0xffffffffffffffff;
+  }
+    
+
+  // we use addr = p->sz, but we let it begin with a new page
+  addr = PGROUNDUP(p->sz);
+
+  // test
+  if(addr != p->sz)
+    printf("waste\n");
+
+  // map lazily only increase p->sz and create VMA
+  // we use addr p->sz to p->sz+len
+  for(i=0; i<NOVMA; i++){
+    if(p->vma[i].valid == 0){
+      // find a unused vma
+      p->vma[i].addr = addr;
+      p->vma[i].len = len;
+      p->vma[i].prot = prot;
+      p->vma[i].flags = flags;
+      p->vma[i].offset = offset;
+      p->vma[i].f = filedup(f);;
+      p->vma[i].valid = 1;
+      break;
+    }
+  }
+
+  if(i == NOVMA)
+    return 0xffffffffffffffff;
+
+  p->sz = PGROUNDUP(addr+len);
+  return addr;
+}
+
+uint64
+sys_munmap(void)
+{
+  uint64 addr;
+  int len;
+  int i;
+  struct proc *p = myproc();
+
+  if(argaddr(0, &addr) < 0)
+    return -1;
+  if(argint(1, &len) < 0)
+    return -1;
+  // find vma
+  for(i=0; i<NOVMA; i++){
+    if(p->vma[i].valid && addr >= p->vma[i].addr && addr < p->vma[i].addr + p->vma[i].len){
+      break;
+    }
+  }
+  if(i>=NOVMA)
+    return -1;
+
+  // write back
+  if((p->vma[i].flags == MAP_SHARED) && (p->vma[i].prot & PROT_WRITE))
+  {
+    len = min(len, p->vma[i].addr + p->vma[i].len - addr);
+    printf("%d %d %d %d\n", p->vma[i].addr, p->vma[i].len, addr, len);
+    int off = addr - p->vma[i].addr;
+    int max = ((MAXOPBLOCKS-1-1-2) / 2) * BSIZE;
+    int k = 0;
+    while(k < len){
+      int n1 = len - k;
+      if(n1 > max)
+        n1 = max;
+
+      begin_op();
+      ilock(p->vma[i].f->ip);
+      writei(p->vma[i].f->ip, 1, addr + k, off + k, n1);
+      printf("write %d to %d\n", addr+k, addr+k+n1);
+      iunlock(p->vma[i].f->ip);
+      end_op();
+
+      // if(r != n1){
+      //   // error from writei
+      //   printf("%d %d\n", r, n1);
+      //   break;
+      // }
+      k += n1;
+    }
+    // if(k!=len)
+    //   return -1;
+  }
+  
+  // unmap, we can assume that it will either unmap at the start, or at the end, or the whole region (but not punch a hole in the middle of a region).
+  int npages = (PGROUNDDOWN(addr+len) - PGROUNDUP(addr))/PGSIZE;
+  uvmunmap(p->pagetable, PGROUNDUP(addr), npages, 1);  
+
+  if((addr==p->vma[i].addr) && (len >= p->vma[i].len)){
+    printf("close %d %d %d %d\n", p->vma[i].addr, p->vma[i].len, addr, len);
+    // close vma
+    fileclose(p->vma[i].f);
+    p->vma[i].valid=0;
+    p->vma[i].addr = 0;
+    p->vma[i].len = 0;
+    p->vma[i].prot = 0;
+    p->vma[i].flags = 0;
+    p->vma[i].offset = 0;
+    p->vma[i].f = 0;
+  }
+  else{
+    // head
+    if(addr==p->vma[i].addr){
+      p->vma[i].addr = addr + len;
+      p->vma[i].len -= len;
+      printf("head %d %d %d %d\n", p->vma[i].addr, p->vma[i].len, addr, len);
+    }
+    // tail
+    else if(addr + len >= p->vma[i].addr + p->vma[i].len){
+      p->vma[i].len = addr - p->vma[i].addr;
+      printf("tail %d %d %d %d\n", p->vma[i].addr, p->vma[i].len, addr, len);
+    }
+    else
+      return -1;
+  }
+  
   return 0;
 }

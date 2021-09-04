@@ -3,8 +3,14 @@
 #include "memlayout.h"
 #include "riscv.h"
 #include "spinlock.h"
+#include "sleeplock.h"
 #include "proc.h"
 #include "defs.h"
+#include "fcntl.h"
+#include "fs.h"
+#include "file.h"
+
+#define min(a, b) ((a) < (b) ? (a) : (b))
 
 struct spinlock tickslock;
 uint ticks;
@@ -50,7 +56,8 @@ usertrap(void)
   // save user program counter.
   p->trapframe->epc = r_sepc();
   
-  if(r_scause() == 8){
+  uint64 scause = r_scause();
+  if(scause == 8){
     // system call
 
     if(p->killed)
@@ -65,7 +72,61 @@ usertrap(void)
     intr_on();
 
     syscall();
-  } else if((which_dev = devintr()) != 0){
+  } 
+  else if(scause == 15 || scause ==  13){
+    uint64 va = r_stval();
+    uint64 start = PGROUNDDOWN(va);
+    int i, flag;
+
+    // kill when va > p->sz
+    if(va > p->sz || va < p->trapframe->sp){
+      p->killed = 1;
+      exit(-1);
+    }
+    
+    // find vma
+    for(i=0; i<NOVMA; i++){
+      if(p->vma[i].valid && va >= p->vma[i].addr && va < p->vma[i].addr + p->vma[i].len){
+        break;
+      }
+    }
+    if(i<NOVMA)
+    {
+      char *mem;
+      uint64 off, n;
+      mem = kalloc();
+      if(mem == 0){
+        printf("lack physical memory\n");
+        p->killed = 1;
+        exit(-1);
+      }
+      memset(mem, 0, PGSIZE);
+      flag = PTE_U;
+      if(p->vma[i].prot & PROT_READ)
+        flag |= PTE_R;
+      if(p->vma[i].prot & PROT_WRITE)
+        flag |= PTE_W;
+      if(p->vma[i].prot & PROT_EXEC)
+        flag |= PTE_X;
+      if(mappages(p->pagetable, start, PGSIZE, (uint64)mem, flag) != 0){
+        kfree(mem);
+        p->killed = 1;
+      }
+      // then read file, we should know that we garuntee addr is page-aligned, so start is in [addr, addr+len) 
+      off = start - p->vma[i].addr;
+      n = min(PGSIZE, p->vma[i].len + p->vma[i].addr - start);
+      ilock(p->vma[i].f->ip);
+      readi(p->vma[i].f->ip, 1, start, off, n);
+      iunlock(p->vma[i].f->ip);
+    }
+    else
+    {
+      printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
+      printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
+      p->killed = 1;
+    }
+  }
+  else if((which_dev = devintr()) != 0){
     // ok
   } else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);

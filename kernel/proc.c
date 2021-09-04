@@ -128,6 +128,11 @@ found:
     return 0;
   }
 
+  // init vma
+  for(int i=0; i<NOVMA; i++){
+    p->vma[i].valid = 0;
+  }
+
   // Set up new context to start executing at forkret,
   // which returns to user space.
   memset(&p->context, 0, sizeof(p->context));
@@ -281,6 +286,19 @@ fork(void)
     return -1;
   }
   np->sz = p->sz;
+
+  // copy vma
+  for(i=0; i<NOVMA; i++){
+    if(p->vma[i].valid){
+      np->vma[i].valid = 1;
+      np->vma[i].addr = p->vma[i].addr;
+      np->vma[i].len = p->vma[i].len;
+      np->vma[i].prot = p->vma[i].prot;
+      np->vma[i].flags = p->vma[i].flags;
+      np->vma[i].offset = p->vma[i].offset;
+      np->vma[i].f = filedup(p->vma[i].f);
+    }
+  }
 
   np->parent = p;
 
